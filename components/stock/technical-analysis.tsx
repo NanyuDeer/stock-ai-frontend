@@ -40,6 +40,16 @@ interface ForecastItem {
   mid: number
   high: number
   trend: "up" | "down" | "flat"
+  confidence: number
+}
+
+interface PredictionResult {
+  method: string
+  overall_trend: "bullish" | "bearish" | "neutral"
+  trend_probability: number
+  confidence: number
+  summary: string
+  forecasts: ForecastItem[]
 }
 
 interface KlineResponse {
@@ -247,6 +257,9 @@ function KlineChart({ symbol }: KlineChartProps) {
   const [predState, setPredState] = useState<PredState>("idle")
   const [forecastData, setForecastData] = useState<ForecastItem[]>([])
   const [predError, setPredError] = useState("")
+  const [overallTrend, setOverallTrend] = useState<"bullish" | "bearish" | "neutral" | null>(null)
+  const [trendProbability, setTrendProbability] = useState(0)
+  const [overallConfidence, setOverallConfidence] = useState(0)
 
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
@@ -254,6 +267,7 @@ function KlineChart({ symbol }: KlineChartProps) {
   const [mounted, setMounted] = useState(false)
   const [crosshair, setCrosshair] = useState<{ x: number; dataIndex: number } | null>(null)
   const [showTooltip, setShowTooltip] = useState(false)
+  const [predTooltip, setPredTooltip] = useState<{ x: number; y: number; data: ForecastItem } | null>(null)
 
   const dataRef = useRef<ChartDataPoint[]>([])
   const periodRef = useRef<PeriodType>(period)
@@ -401,6 +415,9 @@ function KlineChart({ symbol }: KlineChartProps) {
         }
 
         setForecastData(predJson.forecasts)
+        setOverallTrend(predJson.overall_trend || null)
+        setTrendProbability(predJson.trend_probability || 0)
+        setOverallConfidence(predJson.confidence || 0)
         setPredState("success")
       } finally {
         clearTimeout(timeoutId)
@@ -589,39 +606,52 @@ function KlineChart({ symbol }: KlineChartProps) {
     const rect = svgRef.current?.getBoundingClientRect()
     if (!rect) return
     const mx = e.clientX - rect.left
+    const my = e.clientY - rect.top
     const scaleX = dimensions.width / rect.width
+    const scaleY = totalChartHeight / rect.height
     const relX = mx * scaleX
+    const relY = my * scaleY
     const idx = Math.round((relX - padding.left - candleGap / 2) / (candleW + candleGap))
     if (idx >= 0 && idx < allDataLen) {
       setCrosshair({ x: relX, dataIndex: idx })
+      if (hasPrediction && idx >= visibleData.length) {
+        const predIdx = idx - visibleData.length
+        if (predIdx >= 0 && predIdx < forecastData.length) {
+          setPredTooltip({
+            x: e.clientX,
+            y: e.clientY,
+            data: forecastData[predIdx],
+          })
+        } else {
+          setPredTooltip(null)
+        }
+      } else {
+        setPredTooltip(null)
+      }
     } else {
       setCrosshair(null)
+      setPredTooltip(null)
     }
   }
 
   function handleCrosshairLeave() {
     setCrosshair(null)
+    setPredTooltip(null)
   }
 
   const chData = crosshair !== null && crosshair.dataIndex < visibleData.length ? visibleData[crosshair.dataIndex] : null
   const chX = crosshair !== null ? toX(crosshair.dataIndex) + candleW / 2 : null
   const chY = chData ? toY(chData.close) : null
 
-  const overallTrend = hasPrediction
-    ? (forecastData.filter((f) => f.trend === "up").length >= 3 ? "bullish" :
-       forecastData.filter((f) => f.trend === "down").length >= 3 ? "bearish" : "neutral")
-    : null
-
-  const bearishProb = hasPrediction
-    ? Math.round((forecastData.filter((f) => f.trend === "down").length / PRED_DAYS) * 1000) / 10
-    : 0
-
-  const bullishProb = hasPrediction ? 100 - bearishProb : 0
+  const predIdx = crosshair !== null && hasPrediction && crosshair.dataIndex >= visibleData.length
+    ? crosshair.dataIndex - visibleData.length
+    : -1
+  const predData = predIdx >= 0 && predIdx < forecastData.length ? forecastData[predIdx] : null
+  const predChY = predData ? toY(predData.mid) : null
 
   const trendLabel = overallTrend === "bearish" ? "看空" : overallTrend === "bullish" ? "看涨" : "震荡"
   const trendColor = overallTrend === "bearish" ? "#22c55e" : overallTrend === "bullish" ? "#ef4444" : "#9ca3af"
-  const probValue = overallTrend === "bearish" ? bearishProb : overallTrend === "bullish" ? bullishProb : 50
-  const probLabel = overallTrend === "bearish" ? "获利" : overallTrend === "bullish" ? "止损" : "观望"
+  const probValue = trendProbability
 
   const lastClosePrice = visibleData.length > 0 ? visibleData[visibleData.length - 1].close : 0
 
@@ -642,7 +672,8 @@ function KlineChart({ symbol }: KlineChartProps) {
                 />
               </div>
               <span className="text-xs text-muted-foreground">{probValue.toFixed(1)}%</span>
-              <span className="text-xs text-muted-foreground">{probLabel}|{lastUpdateTime || "--"}</span>
+              <span className="text-xs text-muted-foreground ml-2">置信度: {overallConfidence.toFixed(1)}%</span>
+              <span className="text-xs text-muted-foreground ml-2">{lastUpdateTime || "--"}</span>
             </div>
           )}
           {!overallTrend && predState === "loading" && (
@@ -747,58 +778,43 @@ function KlineChart({ symbol }: KlineChartProps) {
             midPoints.push(`${cx},${toY(f.mid)}`)
           })
 
-          const firstTrend = forecastData[0].trend
-          const bandColor = firstTrend === "up" ? "#ef4444" : firstTrend === "down" ? "#22c55e" : "#9ca3af"
-
           return (
             <g>
-              {forecastData.map((f, i) => {
-                const idx = baseIdx + i
-                const x = toX(idx)
-                const yHigh = toY(f.high)
-                const yLow = toY(f.low)
-                const yMid = toY(f.mid)
-                const bandH = yLow - yHigh
-
-                return (
-                  <g key={`pred-${i}`}>
-                    <rect
-                      x={x}
-                      y={yHigh}
-                      width={candleW}
-                      height={Math.max(bandH, 2)}
-                      fill={bandColor}
-                      opacity="0.12"
-                      rx="1.5"
-                    />
-                    <circle cx={x + candleW / 2} cy={yMid} r="3.5" fill="#fff" stroke={bandColor} strokeWidth="1.8" />
-                  </g>
-                )
-              })}
-
               <polyline
                 points={highPoints.join(" ")}
                 fill="none"
-                stroke={bandColor}
+                stroke="#ef4444"
                 strokeWidth="1.2"
-                strokeDasharray="4,3"
-                opacity="0.65"
+                strokeDasharray="5,3"
+                opacity="0.8"
               />
               <polyline
                 points={lowPoints.join(" ")}
                 fill="none"
-                stroke={bandColor}
+                stroke="#22c55e"
                 strokeWidth="1.2"
-                strokeDasharray="4,3"
-                opacity="0.65"
+                strokeDasharray="5,3"
+                opacity="0.8"
               />
               <polyline
                 points={midPoints.join(" ")}
                 fill="none"
-                stroke={bandColor}
+                stroke="#3b82f6"
                 strokeWidth="2"
-                opacity="0.85"
+                opacity="0.9"
               />
+
+              {forecastData.map((f, i) => {
+                const idx = baseIdx + i
+                const x = toX(idx)
+                const yMid = toY(f.mid)
+
+                return (
+                  <g key={`pred-${i}`}>
+                    <circle cx={x + candleW / 2} cy={yMid} r="3.5" fill="#fff" stroke="#3b82f6" strokeWidth="1.8" />
+                  </g>
+                )
+              })}
             </g>
           )
         })()}
@@ -896,17 +912,29 @@ function KlineChart({ symbol }: KlineChartProps) {
 
         <line x1={padding.left} y1={padding.top + priceAreaHeight + 15} x2={dimensions.width - padding.right} y2={padding.top + priceAreaHeight + 15} stroke="#e5e7eb" strokeWidth="0.6" />
 
-        {crosshair !== null && chX !== null && chY !== null && chData && (
+        {crosshair !== null && chX !== null && (chData || predData) && (
           <g pointerEvents="none">
             <line x1={chX} y1={padding.top} x2={chX} y2={padding.top + priceAreaHeight + 12} stroke="#9ca3af" strokeWidth="0.8" strokeDasharray="4,3" opacity="0.8" />
-            <line x1={padding.left} y1={chY} x2={dimensions.width - padding.right} y2={chY} stroke="#9ca3af" strokeWidth="0.8" strokeDasharray="4,3" opacity="0.8" />
-            <rect x={chX - 38} y={chY - 18} width="76" height="18" rx="3" fill="#374151" opacity="0.9" />
-            <text x={chX} y={chY - 5} fontSize="10" fill="#fff" textAnchor="middle">{chData.close.toFixed(2)}</text>
+            <line x1={padding.left} y1={chY ?? predChY!} x2={dimensions.width - padding.right} y2={chY ?? predChY!} stroke="#9ca3af" strokeWidth="0.8" strokeDasharray="4,3" opacity="0.8" />
+            {chData && (
+              <>
+                <rect x={chX - 38} y={(chY ?? predChY!) - 18} width="76" height="18" rx="3" fill="#374151" opacity="0.9" />
+                <text x={chX} y={(chY ?? predChY!) - 5} fontSize="10" fill="#fff" textAnchor="middle">{chData.close.toFixed(2)}</text>
+                <circle cx={chX} cy={chY ?? predChY!} r="3" fill={chData.close >= chData.open ? "#ef4444" : "#22c55e"} stroke="#fff" strokeWidth="1" />
+              </>
+            )}
+            {predData && (
+              <>
+                <rect x={chX - 38} y={predChY! - 18} width="76" height="18" rx="3" fill="#374151" opacity="0.9" />
+                <text x={chX} y={predChY! - 5} fontSize="10" fill="#fff" textAnchor="middle">{predData.mid.toFixed(2)}</text>
+                <circle cx={chX} cy={predChY!} r="3" fill="#fff" stroke="#3b82f6" strokeWidth="1.5" />
+              </>
+            )}
 
             <rect x={chX - 36} y={totalChartHeight - 26} width="72" height="16" rx="3" fill="#374151" opacity="0.9" />
-            <text x={chX} y={totalChartHeight - 14} fontSize="9" fill="#fff" textAnchor="middle">{chData.date.slice(5)}</text>
-
-            <circle cx={chX} cy={chY} r="3" fill={chData.close >= chData.open ? "#ef4444" : "#22c55e"} stroke="#fff" strokeWidth="1" />
+            <text x={chX} y={totalChartHeight - 14} fontSize="9" fill="#fff" textAnchor="middle">
+              {chData ? chData.date.slice(5) : predData?.date.slice(5)}
+            </text>
           </g>
         )}
 
@@ -941,6 +969,22 @@ function KlineChart({ symbol }: KlineChartProps) {
               <text x="22" y="0" fontSize="11" fill={ma.color}>{ma.name}</text>
             </g>
           ))}
+          {hasPrediction && (
+            <>
+              <g transform={`translate(${maLines.length * 70 + 10}, 0)`}>
+                <line x1="0" y1="-4" x2="18" y2="-4" stroke="#ef4444" strokeWidth="1.2" strokeDasharray="5,3" />
+                <text x="22" y="0" fontSize="11" fill="#ef4444">预测最高价</text>
+              </g>
+              <g transform={`translate(${maLines.length * 70 + 100}, 0)`}>
+                <line x1="0" y1="-4" x2="18" y2="-4" stroke="#22c55e" strokeWidth="1.2" strokeDasharray="5,3" />
+                <text x="22" y="0" fontSize="11" fill="#22c55e">预测最低价</text>
+              </g>
+              <g transform={`translate(${maLines.length * 70 + 190}, 0)`}>
+                <circle cx="9" cy="-4" r="3.5" fill="#fff" stroke="#3b82f6" strokeWidth="1.8" />
+                <text x="22" y="0" fontSize="11" fill="#3b82f6">预测收盘价</text>
+              </g>
+            </>
+          )}
         </g>
       </svg>
 
@@ -965,6 +1009,35 @@ function KlineChart({ symbol }: KlineChartProps) {
           <span>振幅: {chData.amplitude.toFixed(2)}%</span>
           <span>涨跌: {chData.changePercent.toFixed(2)}%</span>
           <span>换手: {chData.turnoverRate.toFixed(2)}%</span>
+        </div>
+      )}
+
+      {predTooltip && (
+        <div
+          className="fixed z-[100] pointer-events-none"
+          style={{ left: predTooltip.x + 12, top: predTooltip.y + 12 }}
+        >
+          <div className="bg-gray-900/95 text-white rounded-lg shadow-xl p-3 text-xs space-y-1 min-w-[140px]">
+            <div className="font-semibold text-sm border-b border-gray-600 pb-1 mb-1">
+              {predTooltip.data.date}
+            </div>
+            <div className="flex justify-between gap-4">
+              <span className="text-green-400">预测最低价:</span>
+              <span className="font-medium">{predTooltip.data.low.toFixed(2)}</span>
+            </div>
+            <div className="flex justify-between gap-4">
+              <span className="text-red-400">预测最高价:</span>
+              <span className="font-medium">{predTooltip.data.high.toFixed(2)}</span>
+            </div>
+            <div className="flex justify-between gap-4">
+              <span className="text-blue-400">预测收盘价:</span>
+              <span className="font-medium">{predTooltip.data.mid.toFixed(2)}</span>
+            </div>
+            <div className="flex justify-between gap-4 pt-1 border-t border-gray-600">
+              <span className="text-gray-300">置信度:</span>
+              <span className="font-medium">{(predTooltip.data.confidence ?? 0).toFixed(1)}%</span>
+            </div>
+          </div>
         </div>
       )}
     </div>

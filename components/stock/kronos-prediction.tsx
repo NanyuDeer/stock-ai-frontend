@@ -12,11 +12,14 @@ interface ForecastItem {
   mid: number
   high: number
   trend: "up" | "down" | "flat"
+  confidence: number
 }
 
 interface KronosPredictionResult {
   method: string
-  confidence: string
+  overall_trend: "bullish" | "bearish" | "neutral"
+  trend_probability: number
+  confidence: number
   summary: string
   forecasts: ForecastItem[]
 }
@@ -141,6 +144,7 @@ function ForecastTable({ forecasts }: { forecasts: ForecastItem[] }) {
             <th className="py-2 px-3 text-right font-medium text-muted-foreground">中间价</th>
             <th className="py-2 px-3 text-right font-medium text-muted-foreground">最高价</th>
             <th className="py-2 px-3 text-center font-medium text-muted-foreground">趋势</th>
+            <th className="py-2 px-3 text-right font-medium text-muted-foreground">置信度</th>
           </tr>
         </thead>
         <tbody>
@@ -164,6 +168,7 @@ function ForecastTable({ forecasts }: { forecasts: ForecastItem[] }) {
                   {f.trend === "up" ? "↑ 上涨" : f.trend === "down" ? "↓ 下跌" : "→ 横盘"}
                 </Badge>
               </td>
+              <td className="py-2 px-3 text-right text-foreground">{(f.confidence ?? 0).toFixed(1)}%</td>
             </tr>
           ))}
         </tbody>
@@ -375,18 +380,24 @@ export function KronosPrediction({ symbol }: KronosPredictionProps) {
 
         {result && (
           <>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
               <div className="rounded-md border p-3">
                 <div className="text-xs text-muted-foreground mb-1">预测方法</div>
                 <div className="text-sm font-medium text-foreground">{result.method}</div>
               </div>
               <div className="rounded-md border p-3">
-                <div className="text-xs text-muted-foreground mb-1">置信度</div>
-                <div className="text-sm font-medium text-foreground">{result.confidence}</div>
+                <div className="text-xs text-muted-foreground mb-1">整体趋势</div>
+                <div className="text-sm font-medium text-foreground">
+                  {result.overall_trend === "bullish" ? "看涨" : result.overall_trend === "bearish" ? "看空" : "震荡"}
+                </div>
               </div>
               <div className="rounded-md border p-3">
-                <div className="text-xs text-muted-foreground mb-1">最后更新</div>
-                <div className="text-sm font-medium text-foreground">{updateTime}</div>
+                <div className="text-xs text-muted-foreground mb-1">趋势概率</div>
+                <div className="text-sm font-medium text-foreground">{(result.trend_probability ?? 0).toFixed(1)}%</div>
+              </div>
+              <div className="rounded-md border p-3">
+                <div className="text-xs text-muted-foreground mb-1">置信度</div>
+                <div className="text-sm font-medium text-foreground">{(result.confidence ?? 0).toFixed(1)}%</div>
               </div>
             </div>
 
