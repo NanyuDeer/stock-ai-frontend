@@ -18,7 +18,7 @@ const nextConfig = {
       },
       {
         source: '/kronos/:path*',
-        destination: 'http://localhost:8000/:path*',
+        destination: 'https://NanyuDeer-kronos-prediction.hf.space/:path*',
       },
     ]
   },
